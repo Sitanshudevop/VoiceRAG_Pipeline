@@ -461,9 +461,9 @@
 // ==========================================
 // CONFIGURATION
 // ==========================================
-// Replace this with your Render backend URL before deploying!
-// e.g., const API_BASE_URL = "https://voicerag-backend-xxxx.onrender.com";
-const API_BASE_URL = "http://localhost:8000";
+// Replace this with your backend URL if hosting separately!
+// Or leave empty if frontend and backend are hosted together.
+const API_BASE_URL = window.location.origin === "null" || window.location.protocol === "file:" ? "http://localhost:8000" : window.location.origin;
 
 document.addEventListener("DOMContentLoaded", () => {
     // DOM Elements

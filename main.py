@@ -123,6 +123,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Production Voice RAG API", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
+@app.get("/")
+def serve_frontend():
+    return FileResponse("index.html")
+
 # ==============================================================================
 # UTILS & GUARDRAILS
 # ==============================================================================
