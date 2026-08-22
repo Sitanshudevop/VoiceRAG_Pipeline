@@ -463,7 +463,8 @@
 // ==========================================
 // Replace this with your backend URL if hosting separately!
 // Or leave empty if frontend and backend are hosted together.
-const API_BASE_URL = window.location.origin === "null" || window.location.protocol === "file:" ? "http://localhost:8000" : window.location.origin;
+const isLocal = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.protocol === "file:";
+const API_BASE_URL = isLocal ? "http://localhost:8000" : window.location.origin;
 
 document.addEventListener("DOMContentLoaded", () => {
     // DOM Elements
