@@ -101,6 +101,11 @@ async def lifespan(app: FastAPI):
     metadata_path = "metadata.json"
     bm25_path = "bm25.pkl"
 
+    if not (os.path.exists(index_path) and os.path.exists(metadata_path) and os.path.exists(bm25_path)):
+        logger.info("Vector databases missing. Running auto-ingestion via HF API...")
+        import ingest
+        ingest.run_ingest()
+
     if os.path.exists(index_path) and os.path.exists(metadata_path) and os.path.exists(bm25_path):
         vector_index = faiss.read_index(index_path)
         with open(metadata_path, "r", encoding="utf-8") as f:
