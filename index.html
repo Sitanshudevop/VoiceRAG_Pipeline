@@ -458,6 +458,13 @@
 </main>
 
 <script>
+// ==========================================
+// CONFIGURATION
+// ==========================================
+// Replace this with your Render backend URL before deploying!
+// e.g., const API_BASE_URL = "https://voicerag-backend-xxxx.onrender.com";
+const API_BASE_URL = "http://localhost:8000";
+
 document.addEventListener("DOMContentLoaded", () => {
     // DOM Elements
     const pttButton = document.getElementById("ptt-button");
@@ -661,7 +668,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (textVal) formData.append("text_fallback", textVal);
         
         try {
-            const response = await fetch("http://localhost:8000/ask", {
+            const response = await fetch(`${API_BASE_URL}/ask`, {
                 method: "POST",
                 body: formData
             });
