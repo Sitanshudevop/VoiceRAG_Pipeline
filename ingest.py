@@ -15,11 +15,6 @@ Latency Budget & Architecture Rationale:
 
 import json
 import os
-import faiss
-import numpy as np
-import requests
-import os
-from dotenv import load_dotenv
 import pickle
 from rank_bm25 import BM25Okapi
 
@@ -138,48 +133,9 @@ def run_ingest(output_dir: str = "."):
 
     print(f"[Ingest] Generated {len(chunks_with_metadata)} high-quality semantic chunks.")
 
-    print("[Ingest] Generating embeddings via Hugging Face Inference API...")
-    load_dotenv()
-    hf_token = os.environ.get("HF_TOKEN")
-    if not hf_token:
-        raise ValueError("HF_TOKEN environment variable is not set!")
-    
-    API_URL = "https://api-inference.huggingface.co/models/sentence-transformers/all-MiniLM-L6-v2"
-    headers = {"Authorization": f"Bearer {hf_token}"}
-    
-    texts_to_encode = [c["text"] for c in chunks_with_metadata]
-    
-    import time
-    for attempt in range(5):
-        try:
-            response = requests.post(API_URL, headers=headers, json={"inputs": texts_to_encode})
-            if response.status_code == 200:
-                break
-            print(f"[Ingest] HF API Error ({response.status_code}), retrying...")
-            time.sleep(2)
-        except requests.exceptions.ConnectionError as e:
-            print(f"[Ingest] Network error ({e}), retrying in 2 seconds...")
-            time.sleep(2)
-    else:
-        raise RuntimeError("Failed to connect to Hugging Face API after 5 attempts.")
-        
-    embeddings_list = response.json()
-    embeddings = np.array(embeddings_list, dtype="float32")
-    
-    # Normalize embeddings for Cosine Similarity (IndexFlatIP)
-    faiss.normalize_L2(embeddings)
 
-    dimension = embeddings.shape[1]  # 384 dimensions for all-MiniLM-L6-v2
-    print(f"[Ingest] Building FAISS IndexFlatIP (Normalized Inner Product / Cosine Similarity) - Dimension: {dimension}...")
-    index = faiss.IndexFlatIP(dimension)
-    index.add(embeddings)
 
-    index_file = os.path.join(output_dir, "vectorstore.index")
     metadata_file = os.path.join(output_dir, "metadata.json")
-
-    print(f"[Ingest] Persisting FAISS index to {index_file}...")
-    faiss.write_index(index, index_file)
-
     print(f"[Ingest] Persisting chunk metadata to {metadata_file}...")
     with open(metadata_file, "w", encoding="utf-8") as f:
         json.dump(chunks_with_metadata, f, indent=2)

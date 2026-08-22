@@ -16,8 +16,6 @@ from typing import Optional, List, Dict
 from contextlib import asynccontextmanager
 from collections import OrderedDict
 
-import numpy as np
-import faiss
 from fastapi import FastAPI, UploadFile, File, Request, Form, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
@@ -37,8 +35,6 @@ logger = logging.getLogger("VoiceRAG")
 # ==============================================================================
 # GLOBAL RUNTIME STATE
 # ==============================================================================
-embedding_model: Optional[SentenceTransformer] = None
-vector_index: Optional[faiss.Index] = None
 chunks_metadata: List[dict] = []
 bm25_index = None
 groq_client: Optional[AsyncGroq] = None
@@ -85,7 +81,7 @@ CC_REGEX = r'\b(?:\d[ -]*?){13,16}\b'
 # ==============================================================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global embedding_model, vector_index, chunks_metadata, groq_client
+    global chunks_metadata, bm25_index, groq_client
 
     logger.info("Initializing Voice RAG Runtime Engine...")
     t_start = time.perf_counter()
@@ -95,26 +91,22 @@ async def lifespan(app: FastAPI):
         logger.error("CRITICAL: GROQ_API_KEY is not set.")
     groq_client = AsyncGroq(api_key=api_key)
 
-    logger.info("Skipping local embedding model. API Embeddings configured.")
-
-    index_path = "vectorstore.index"
     metadata_path = "metadata.json"
     bm25_path = "bm25.pkl"
 
-    if not (os.path.exists(index_path) and os.path.exists(metadata_path) and os.path.exists(bm25_path)):
-        logger.info("Vector databases missing. Running auto-ingestion via HF API...")
+    if not (os.path.exists(metadata_path) and os.path.exists(bm25_path)):
+        logger.info("Vector databases missing. Running auto-ingestion...")
         import ingest
         ingest.run_ingest()
 
-    if os.path.exists(index_path) and os.path.exists(metadata_path) and os.path.exists(bm25_path):
-        vector_index = faiss.read_index(index_path)
+    if os.path.exists(metadata_path) and os.path.exists(bm25_path):
         with open(metadata_path, "r", encoding="utf-8") as f:
             chunks_metadata = json.load(f)
         with open(bm25_path, "rb") as f:
             bm25_index = pickle.load(f)
-        logger.info(f"Loaded {len(chunks_metadata)} chunks into FAISS and BM25 databases.")
+        logger.info(f"Loaded {len(chunks_metadata)} chunks into BM25 database.")
     else:
-        logger.warning(f"FAISS index, metadata, or bm25.pkl not found. Please execute 'python ingest.py' first!")
+        logger.warning(f"Metadata or bm25.pkl not found. Please execute 'python ingest.py' first!")
 
     t_total = (time.perf_counter() - t_start) * 1000
     logger.info(f"Runtime startup & warm-up completed in {t_total:.2f}ms.")
@@ -171,19 +163,6 @@ def check_rate_limit(client_ip: str) -> bool:
     rate_limits[client_ip].append(now)
     return True
 
-def lexical_rerank(query: str, chunks: List[dict]) -> List[dict]:
-    """Basic keyword overlap reranking over top-k FAISS chunks"""
-    query_words = set(re.findall(r'\w+', query.lower()))
-    
-    scored_chunks = []
-    for chunk in chunks:
-        chunk_words = set(re.findall(r'\w+', chunk["text"].lower()))
-        overlap = len(query_words.intersection(chunk_words))
-        scored_chunks.append((overlap, chunk))
-        
-    scored_chunks.sort(key=lambda x: x[0], reverse=True)
-    return [c[1] for c in scored_chunks[:2]] # Return top 2
-
 # ==============================================================================
 # ENDPOINTS
 # ==============================================================================
@@ -203,9 +182,8 @@ async def health_check():
             pass
             
     return {
-        "status": "ready" if vector_index is not None and bm25_index is not None and groq_status == "ok" else "degraded",
+        "status": "ready" if bm25_index is not None and groq_status == "ok" else "degraded",
         "vector_chunks_indexed": len(chunks_metadata) if chunks_metadata else 0,
-        "embedding_model": "all-MiniLM-L6-v2 (HF API)",
         "llm_engine": "Groq LPU",
         "stt_engine": "Groq LPU (whisper-large-v3)",
         "groq_api_status": groq_status,
@@ -352,83 +330,23 @@ async def ask_pipeline(
             yield f"data: {json.dumps(payload)}\n\n"
         return StreamingResponse(event_generator_cached(), media_type="text/event-stream")
 
-    # Embedding via API
-    t_embed_start = time.perf_counter()
-    hf_token = os.getenv("HF_TOKEN")
-    if not hf_token:
-        raise HTTPException(status_code=500, detail="HF_TOKEN not set for API embeddings")
-        
-    async def fetch_embedding(text: str):
-        import requests
-        import time
-        API_URL = "https://api-inference.huggingface.co/models/sentence-transformers/all-MiniLM-L6-v2"
-        headers = {"Authorization": f"Bearer {hf_token}"}
-        
-        for attempt in range(5):
-            try:
-                response = await asyncio.to_thread(
-                    requests.post, API_URL, headers=headers, json={"inputs": [text]}
-                )
-                if response.status_code == 200:
-                    break
-                logger.warning(f"HF API Error ({response.status_code}), retrying...")
-                await asyncio.sleep(2)
-            except requests.exceptions.ConnectionError as e:
-                logger.warning(f"Network error ({e}), retrying in 2 seconds...")
-                await asyncio.sleep(2)
-        else:
-            raise Exception("Failed to connect to Hugging Face API after 5 attempts.")
-            
-        import numpy as np
-        emb = np.array(response.json(), dtype="float32")
-        faiss.normalize_L2(emb)
-        return emb
-
-    try:
-        query_vector = await fetch_embedding(transcribed_text)
-    except Exception as e:
-        logger.error(f"Embedding API failed: {e}")
-        raise HTTPException(status_code=500, detail="Embedding API failed")
-        
-    latency_breakdown["embedding_ms"] = round((time.perf_counter() - t_embed_start) * 1000, 2)
-
-    # Retrieval & Thresholding
+    # Retrieval (BM25 Only)
     t_retrieval_start = time.perf_counter()
-    distances, indices = vector_index.search(query_vector, 5)
-    
     retrieved_chunks = []
     
     if bm25_index is not None and len(chunks_metadata) > 0:
         query_tokens = transcribed_text.lower().split()
         bm25_scores = bm25_index.get_scores(query_tokens)
         
-        # Max-Min normalization for BM25 and FAISS
-        max_faiss = float(max(distances[0])) if len(distances[0]) > 0 else 1.0
-        min_faiss = float(min(distances[0])) if len(distances[0]) > 0 else 0.0
-        range_faiss = max_faiss - min_faiss if max_faiss > min_faiss else 1.0
-        
-        max_bm25 = float(max(bm25_scores)) if len(bm25_scores) > 0 else 1.0
-        min_bm25 = float(min(bm25_scores)) if len(bm25_scores) > 0 else 0.0
-        range_bm25 = max_bm25 - min_bm25 if max_bm25 > min_bm25 else 1.0
-        
-        hybrid_results = []
+        bm25_results = []
         for i, doc in enumerate(chunks_metadata):
-            faiss_score = 0.0
-            if i in indices[0]:
-                faiss_score = float(distances[0][list(indices[0]).index(i)])
+            bm25_results.append((bm25_scores[i], doc))
             
-            norm_faiss = (faiss_score - min_faiss) / range_faiss
-            norm_bm25 = (bm25_scores[i] - min_bm25) / range_bm25
-            
-            # Confidence out of 100
-            confidence = int((norm_faiss * 0.6 + norm_bm25 * 0.4) * 100)
-            hybrid_results.append((confidence, doc))
-            
-        hybrid_results.sort(key=lambda x: x[0], reverse=True)
-        top_hybrid = hybrid_results[:2]
+        bm25_results.sort(key=lambda x: x[0], reverse=True)
+        top_results = bm25_results[:2]
         
-        if top_hybrid and top_hybrid[0][0] >= 30: # 30% confidence threshold
-            for score, doc in top_hybrid:
+        for score, doc in top_results:
+            if score > 0:
                 doc_copy = dict(doc)
                 doc_copy["confidence"] = score
                 retrieved_chunks.append(doc_copy)
