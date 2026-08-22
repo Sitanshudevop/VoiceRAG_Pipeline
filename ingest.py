@@ -17,7 +17,9 @@ import json
 import os
 import faiss
 import numpy as np
-from sentence_transformers import SentenceTransformer
+import requests
+import os
+from dotenv import load_dotenv
 import pickle
 from rank_bm25 import BM25Okapi
 
@@ -136,13 +138,27 @@ def run_ingest(output_dir: str = "."):
 
     print(f"[Ingest] Generated {len(chunks_with_metadata)} high-quality semantic chunks.")
 
-    print("[Ingest] Loading local embedding model 'all-MiniLM-L6-v2' (CPU)...")
-    model = SentenceTransformer("all-MiniLM-L6-v2", device="cpu")
-
-    print("[Ingest] Encoding chunks to float32 dense vectors...")
+    print("[Ingest] Generating embeddings via Hugging Face Inference API...")
+    load_dotenv()
+    hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token:
+        raise ValueError("HF_TOKEN environment variable is not set!")
+    
+    API_URL = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
+    headers = {"Authorization": f"Bearer {hf_token}"}
+    
     texts_to_encode = [c["text"] for c in chunks_with_metadata]
-    embeddings = model.encode(texts_to_encode, convert_to_numpy=True, normalize_embeddings=True)
-    embeddings = embeddings.astype("float32")
+    
+    # We must post to the API. It accepts a JSON payload with "inputs" as a list of strings
+    response = requests.post(API_URL, headers=headers, json={"inputs": texts_to_encode})
+    if response.status_code != 200:
+        raise RuntimeError(f"Hugging Face API failed: {response.text}")
+        
+    embeddings_list = response.json()
+    embeddings = np.array(embeddings_list, dtype="float32")
+    
+    # Normalize embeddings for Cosine Similarity (IndexFlatIP)
+    faiss.normalize_L2(embeddings)
 
     dimension = embeddings.shape[1]  # 384 dimensions for all-MiniLM-L6-v2
     print(f"[Ingest] Building FAISS IndexFlatIP (Normalized Inner Product / Cosine Similarity) - Dimension: {dimension}...")

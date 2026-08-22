@@ -22,7 +22,6 @@ from fastapi import FastAPI, UploadFile, File, Request, Form, HTTPException, sta
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 from dotenv import load_dotenv
-from sentence_transformers import SentenceTransformer
 from groq import AsyncGroq
 
 # Load environment variables from .env
@@ -96,9 +95,7 @@ async def lifespan(app: FastAPI):
         logger.error("CRITICAL: GROQ_API_KEY is not set.")
     groq_client = AsyncGroq(api_key=api_key)
 
-    logger.info("Loading 'all-MiniLM-L6-v2' embedding model into CPU memory...")
-    embedding_model = SentenceTransformer("all-MiniLM-L6-v2", device="cpu")
-    _ = embedding_model.encode(["warmup query system initialization"], normalize_embeddings=True)
+    logger.info("Skipping local embedding model. API Embeddings configured.")
 
     index_path = "vectorstore.index"
     metadata_path = "metadata.json"
@@ -203,7 +200,7 @@ async def health_check():
     return {
         "status": "ready" if vector_index is not None and bm25_index is not None and groq_status == "ok" else "degraded",
         "vector_chunks_indexed": len(chunks_metadata) if chunks_metadata else 0,
-        "embedding_model": "all-MiniLM-L6-v2 (CPU Local)",
+        "embedding_model": "all-MiniLM-L6-v2 (HF API)",
         "llm_engine": "Groq LPU",
         "stt_engine": "Groq LPU (whisper-large-v3)",
         "groq_api_status": groq_status,
@@ -350,15 +347,32 @@ async def ask_pipeline(
             yield f"data: {json.dumps(payload)}\n\n"
         return StreamingResponse(event_generator_cached(), media_type="text/event-stream")
 
-    # Embedding
+    # Embedding via API
     t_embed_start = time.perf_counter()
-    query_vector = await asyncio.to_thread(
-        embedding_model.encode,
-        [transcribed_text],
-        convert_to_numpy=True,
-        normalize_embeddings=True
-    )
-    query_vector = query_vector.astype("float32")
+    hf_token = os.getenv("HF_TOKEN")
+    if not hf_token:
+        raise HTTPException(status_code=500, detail="HF_TOKEN not set for API embeddings")
+        
+    async def fetch_embedding(text: str):
+        import requests
+        API_URL = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
+        headers = {"Authorization": f"Bearer {hf_token}"}
+        response = await asyncio.to_thread(
+            requests.post, API_URL, headers=headers, json={"inputs": [text]}
+        )
+        if response.status_code != 200:
+            raise Exception(f"HF API Error: {response.text}")
+        import numpy as np
+        emb = np.array(response.json(), dtype="float32")
+        faiss.normalize_L2(emb)
+        return emb
+
+    try:
+        query_vector = await fetch_embedding(transcribed_text)
+    except Exception as e:
+        logger.error(f"Embedding API failed: {e}")
+        raise HTTPException(status_code=500, detail="Embedding API failed")
+        
     latency_breakdown["embedding_ms"] = round((time.perf_counter() - t_embed_start) * 1000, 2)
 
     # Retrieval & Thresholding
