@@ -10,3 +10,7 @@ with demo:
 # Mount the dummy Gradio app onto our existing FastAPI app.
 # We mount it at /gradio so it doesn't interfere with our root (/) index.html frontend!
 app = gr.mount_gradio_app(custom_app, demo, path="/gradio")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=7860)
