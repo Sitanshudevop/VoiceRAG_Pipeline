@@ -1,4 +1,11 @@
+import os
 import gradio as gr
+
+if not os.path.exists("vectorstore.index"):
+    print("Vector database missing. Running ingestion...")
+    import ingest
+    ingest.run_ingest()
+
 from main import app as custom_app
 
 # Create a dummy Gradio app to satisfy Hugging Face's SDK requirement
