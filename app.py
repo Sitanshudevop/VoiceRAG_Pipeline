@@ -1,10 +1,6 @@
 import os
 import gradio as gr
-import spaces
 
-@spaces.GPU
-def dummy_gpu_function():
-    pass
 
 if not os.path.exists("vectorstore.index"):
     print("Vector database missing. Running ingestion...")
