@@ -144,15 +144,24 @@ def run_ingest(output_dir: str = "."):
     if not hf_token:
         raise ValueError("HF_TOKEN environment variable is not set!")
     
-    API_URL = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
+    API_URL = "https://api-inference.huggingface.co/models/sentence-transformers/all-MiniLM-L6-v2"
     headers = {"Authorization": f"Bearer {hf_token}"}
     
     texts_to_encode = [c["text"] for c in chunks_with_metadata]
     
-    # We must post to the API. It accepts a JSON payload with "inputs" as a list of strings
-    response = requests.post(API_URL, headers=headers, json={"inputs": texts_to_encode})
-    if response.status_code != 200:
-        raise RuntimeError(f"Hugging Face API failed: {response.text}")
+    import time
+    for attempt in range(5):
+        try:
+            response = requests.post(API_URL, headers=headers, json={"inputs": texts_to_encode})
+            if response.status_code == 200:
+                break
+            print(f"[Ingest] HF API Error ({response.status_code}), retrying...")
+            time.sleep(2)
+        except requests.exceptions.ConnectionError as e:
+            print(f"[Ingest] Network error ({e}), retrying in 2 seconds...")
+            time.sleep(2)
+    else:
+        raise RuntimeError("Failed to connect to Hugging Face API after 5 attempts.")
         
     embeddings_list = response.json()
     embeddings = np.array(embeddings_list, dtype="float32")

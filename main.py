@@ -360,13 +360,25 @@ async def ask_pipeline(
         
     async def fetch_embedding(text: str):
         import requests
-        API_URL = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
+        import time
+        API_URL = "https://api-inference.huggingface.co/models/sentence-transformers/all-MiniLM-L6-v2"
         headers = {"Authorization": f"Bearer {hf_token}"}
-        response = await asyncio.to_thread(
-            requests.post, API_URL, headers=headers, json={"inputs": [text]}
-        )
-        if response.status_code != 200:
-            raise Exception(f"HF API Error: {response.text}")
+        
+        for attempt in range(5):
+            try:
+                response = await asyncio.to_thread(
+                    requests.post, API_URL, headers=headers, json={"inputs": [text]}
+                )
+                if response.status_code == 200:
+                    break
+                logger.warning(f"HF API Error ({response.status_code}), retrying...")
+                await asyncio.sleep(2)
+            except requests.exceptions.ConnectionError as e:
+                logger.warning(f"Network error ({e}), retrying in 2 seconds...")
+                await asyncio.sleep(2)
+        else:
+            raise Exception("Failed to connect to Hugging Face API after 5 attempts.")
+            
         import numpy as np
         emb = np.array(response.json(), dtype="float32")
         faiss.normalize_L2(emb)
