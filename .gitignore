@@ -1,0 +1,6 @@
+.env
+__pycache__/
+.pytest_cache/
+*.pkl
+*.index
+metadata.json
