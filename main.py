@@ -167,10 +167,12 @@ def check_rate_limit(client_ip: str) -> bool:
 # ENDPOINTS
 # ==============================================================================
 
+@app.head("/")
 @app.get("/")
 async def serve_index():
     return FileResponse("index.html")
 
+@app.head("/health")
 @app.get("/health")
 async def health_check():
     groq_status = "degraded"
